@@ -25,7 +25,13 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 const novoId = () => Math.random().toString(36).slice(2, 10);
 
 /* ---------- estado ---------- */
-const VAZIO = { versao: 1, antecedencia: 7, horaAvisoEstoque: '10:00', itens: [] };
+const VAZIO = { versao: 1, antecedencia: 7, horaAvisoEstoque: '10:00', estilo: 'padrao', alertas: { antes: 0, repetir1: 0, repetir2: 0 }, itens: [] };
+// Predefinições de estilo: quantos avisos cada lembrete recebe (minutos antes / depois do horário).
+const ESTILOS = {
+  discreto: { nome: 'Discreto', alertas: { antes: 0, repetir1: 0, repetir2: 0 }, desc: 'Um aviso no horário, sem som, que vai direto para a Central de Notificações.' },
+  padrao: { nome: 'Padrão', alertas: { antes: 0, repetir1: 0, repetir2: 0 }, desc: 'Um aviso no horário, com som e banner que some sozinho.' },
+  insistente: { nome: 'Insistente', alertas: { antes: 0, repetir1: 5, repetir2: 15 }, desc: 'Aviso no horário e mais dois (5 e 15 min depois), com banner que fica na tela até você tocar.' },
+};
 let dados = ls.get(K.dados, null);
 let base = ls.get(K.base, null);          // JSON da última versão confirmada
 let aba = ls.get(K.aba, 'hoje');
@@ -35,6 +41,7 @@ const token = () => ls.get(K.token, '');
 
 function normalizar(d) {
   d = Object.assign({}, VAZIO, d || {});
+  d.alertas = Object.assign({}, VAZIO.alertas, d.alertas || {});
   d.itens = (d.itens || []).map(i => Object.assign({ id: novoId(), nome: '', dose: '', obs: '', ativo: true, estoque: null, horarios: [] }, i));
   return d;
 }
@@ -109,13 +116,18 @@ function gerarICS() {
     'X-WR-CALNAME:Remédios', 'X-WR-TIMEZONE:America/Sao_Paulo', 'REFRESH-INTERVAL;VALUE=DURATION:PT15M', 'X-PUBLISHED-TTL:PT15M',
     'BEGIN:VTIMEZONE', 'TZID:America/Sao_Paulo', 'BEGIN:STANDARD', 'DTSTART:19700101T000000', 'TZOFFSETFROM:-0300', 'TZOFFSETTO:-0300', 'TZNAME:-03', 'END:STANDARD', 'END:VTIMEZONE'];
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
-  const ev = (uid, dia, hora, dur, titulo, desc, rrule) => {
+  const al = dados.alertas;
+  const gatilhos = [0].concat(al.antes ? [-al.antes] : [], al.repetir1 ? [al.repetir1] : [], al.repetir2 ? [al.repetir2] : []);
+  const trig = m => 'TRIGGER:' + (m < 0 ? '-PT' + (-m) + 'M' : 'PT' + m + 'M');
+  const ev = (uid, dia, hora, dur, titulo, desc, rrule, multi) => {
     L.push('BEGIN:VEVENT', 'UID:' + uid + '@porta-comprimidos', 'DTSTAMP:' + stamp,
       'DTSTART;TZID=America/Sao_Paulo:' + ymd(dia) + 'T' + hm(hora),
       'DTEND;TZID=America/Sao_Paulo:' + ymd(dia) + 'T' + hm(maisMin(hora, dur)));
     if (rrule) L.push(rrule);
-    L.push(dobra('SUMMARY:' + icsTxt(titulo)), dobra('DESCRIPTION:' + icsTxt(desc)), 'TRANSP:TRANSPARENT',
-      'BEGIN:VALARM', 'ACTION:DISPLAY', dobra('DESCRIPTION:' + icsTxt(titulo)), 'TRIGGER:PT0M', 'END:VALARM', 'END:VEVENT');
+    L.push(dobra('SUMMARY:' + icsTxt(titulo)), dobra('DESCRIPTION:' + icsTxt(desc)), 'TRANSP:TRANSPARENT');
+    (multi ? gatilhos : [0]).forEach(m => L.push('BEGIN:VALARM', 'ACTION:DISPLAY',
+      dobra('DESCRIPTION:' + icsTxt((m > 0 ? 'Ainda não tomou? ' : m < 0 ? 'Em ' + (-m) + ' min: ' : '') + titulo)), trig(m), 'END:VALARM'));
+    L.push('END:VEVENT');
   };
 
   // Lembretes de dose: por horário, em trechos de datas com o mesmo conjunto de itens.
@@ -134,7 +146,7 @@ function gerarICS() {
       const titulo = '💊 ' + ativos.map(({ item, h }) => item.nome + (Number(h.qtd) !== 1 ? ' ×' + h.qtd : '')).join(' + ');
       const desc = ativos.map(({ item, h }) => '• ' + item.nome + ': ' + doseTxt(item, h.qtd) + (item.obs ? ' — ' + item.obs : '')).join('\n');
       const rr = 'RRULE:FREQ=DAILY' + (fimTrecho ? ';COUNT=' + (dif(ini, fimTrecho) + 1) : '');
-      ev('dose-' + hash(hora + ini), ini, hora, 10, titulo, desc, rr);
+      ev('dose-' + hash(hora + ini), ini, hora, 10, titulo, desc, rr, true);
     });
   });
 
@@ -215,11 +227,33 @@ let toastT;
 function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 4000); }
 function irPara(a) { aba = a; editando = null; ls.set(K.aba, a); render(); window.scrollTo(0, 0); }
 
+function atualizarFaixa() {
+  document.getElementById('pendente').hidden = !(pendente() && (dados.itens.length > 0 || !!base));
+}
+
+function passosIphone(est) {
+  const base = 'Ajustes → Notificações → Calendário: deixe <b>Permitir Notificações</b> ligado';
+  if (est === 'discreto') return [
+    base + ' e marque só <b>Central de Notificações</b>.',
+    'Desligue <b>Sons</b> nessa mesma tela.',
+    'Em Ajustes → Sons e Tato → Alertas de Calendário, escolha <b>Nenhum</b> se quiser só vibração.',
+  ];
+  const l = [
+    base + ' e marque <b>Tela Bloqueada</b>, <b>Central de Notificações</b> e <b>Banners</b>.',
+    'Em <b>Estilo do Banner</b>, escolha <b>' + (est === 'insistente' ? 'Persistente</b> (fica na tela até você tocar)' : 'Temporário</b>') + '.',
+    'Deixe <b>Sons</b> ligado. Para escolher o toque: Ajustes → Sons e Tato → <b>Alertas de Calendário</b>' + (est === 'insistente' ? ' (prefira um toque longo, como "Radar" ou "Sinal")' : '') + '.',
+  ];
+  if (est === 'insistente') l.push(
+    'Ligue <b>Notificações Sensíveis ao Tempo</b> na tela do Calendário, para os avisos passarem pelo modo Foco.',
+    'Se usar Foco (Não Perturbe, Sono), em Ajustes → Foco → cada modo → Apps, adicione o <b>Calendário</b> como permitido.');
+  l.push('Os avisos tocam no volume da campainha, não no da mídia. Se o iPhone estiver no silencioso, só vibra.');
+  return l;
+}
+
 function render() {
   document.getElementById('hoje-data').textContent = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' });
   document.querySelectorAll('.abas button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.aba === aba && !editando)));
-  const pend = pendente() && dados.itens.length > 0;
-  document.getElementById('pendente').hidden = !pend;
+  atualizarFaixa();
   if (editando) return renderEditor();
   ({ hoje: renderHoje, itens: renderItens, ajustes: renderAjustes }[aba] || renderHoje)();
 }
@@ -313,6 +347,21 @@ function renderAjustes() {
     '<label class="campo" for="a-ant">Avisar quantos dias antes<input type="number" min="1" max="60" id="a-ant" data-aj="antecedencia" value="' + esc(dados.antecedencia) + '"></label>' +
     '<label class="campo" for="a-hora">Horário do aviso<input type="time" id="a-hora" data-aj="horaAvisoEstoque" value="' + esc(dados.horaAvisoEstoque) + '"></label></div></section>';
 
+  // Como os alarmes aparecem
+  const est = ESTILOS[dados.estilo] ? dados.estilo : 'padrao', al = dados.alertas;
+  const opc = (id, rot, val, lista) => '<label class="campo" for="' + id + '">' + rot + '<select id="' + id + '" data-al="' + id.slice(3) + '">' +
+    lista.map(([v, t]) => '<option value="' + v + '"' + (Number(val) === v ? ' selected' : '') + '>' + t + '</option>').join('') + '</select></label>';
+  h += '<section><h2>Como os alarmes aparecem</h2>' +
+    '<div class="estilos" role="radiogroup" aria-label="Estilo dos alarmes">' + Object.keys(ESTILOS).map(k =>
+      '<button type="button" role="radio" class="estilo" aria-checked="' + (k === est) + '" data-estilo="' + k + '"><b>' + ESTILOS[k].nome + '</b><span>' + ESTILOS[k].desc + '</span></button>').join('') + '</div>' +
+    '<h3>Avisos de cada horário</h3><div class="campos-3">' +
+    opc('al-antes', 'Antes do horário', al.antes, [[0, 'Não'], [5, '5 min antes'], [10, '10 min antes'], [15, '15 min antes'], [30, '30 min antes']]) +
+    opc('al-repetir1', 'Repetir', al.repetir1, [[0, 'Não'], [5, '5 min depois'], [10, '10 min depois'], [15, '15 min depois'], [30, '30 min depois']]) +
+    opc('al-repetir2', 'Repetir de novo', al.repetir2, [[0, 'Não'], [10, '10 min depois'], [15, '15 min depois'], [30, '30 min depois'], [60, '1 h depois']]) +
+    '</div><p class="note">Sempre há um aviso no horário. As repetições tocam mesmo se você já marcou como tomado, porque o Calendário não sabe disso.</p>' +
+    '<h3>Som, banner e tela bloqueada</h3><p class="note">O iPhone não deixa um calendário escolher o som nem o tipo de banner. Isso fica nos Ajustes do iPhone e vale para todos os eventos do Calendário. Para o estilo ' + ESTILOS[est].nome + ':</p>' +
+    '<ol class="passos">' + passosIphone(est).map(p => '<li>' + p + '</li>').join('') + '</ol></section>';
+
   h += '<section><h2>Conexão com o GitHub</h2>';
   if (tk) h += '<p class="note">Conectado' + (gistInfo ? ' ao Gist ' + esc(gistInfo.id.slice(0, 7)) + '…' : '; o Gist é criado no primeiro Confirmar') + '.</p>' +
     '<div class="linha-acoes"><button class="btn ghost small" data-acao="baixar">Recarregar do GitHub</button><button class="btn ghost small" data-acao="sair">Desconectar este aparelho</button></div>';
@@ -332,6 +381,14 @@ function renderAjustes() {
     '<p class="note">O iPhone busca o calendário de tempos em tempos. Para forçar, abra o app Calendário, toque em Calendários e puxe a lista para baixo.</p>';
   else h += '<p class="note">O link aparece aqui depois do primeiro Confirmar.</p>';
   h += '</section>';
+  h += '<section><h2>Apagar dados</h2>' +
+    '<p class="note">Para apagar um item só, abra-o em Remédios e toque em Excluir.</p>' +
+    '<div class="linha-acoes"><button class="btn ghost small" data-acao="limpar-marcas">Limpar marcações de tomado</button>' +
+    '<button class="btn danger small" data-acao="zerar">Apagar tudo</button></div>' +
+    '<div class="alerta danger" id="conf-zerar" hidden><b>Apagar todos os remédios, horários e estoques?</b>' +
+    '<span class="note">' + (token() ? 'O app e o Calendário do iPhone ficam vazios. A assinatura continua, então dá para cadastrar de novo depois.' : 'Apaga os dados deste aparelho.') + ' Não dá para desfazer.</span>' +
+    '<div class="linha-acoes"><button class="btn danger small" data-acao="zerar-sim">Sim, apagar tudo</button><button class="btn ghost small" data-acao="zerar-nao">Cancelar</button></div></div>' +
+    '<p class="note">Para tirar o calendário do iPhone de vez: Ajustes → Apps → Calendário → Contas de Calendário → Calendários Assinados → Remédios → Apagar Conta.</p></section>';
   h += '<section><h2>Sobre</h2><p class="note">As marcações de "tomado" ficam só neste aparelho. Instale pelo Safari: Compartilhar → Adicionar à Tela de Início.</p></section>';
   $app.innerHTML = h;
 }
@@ -345,8 +402,21 @@ document.getElementById('btn-descartar').addEventListener('click', () => {
 });
 
 $app.addEventListener('click', async e => {
-  const t = e.target.closest('[data-marcar],[data-editar],[data-acao],[data-rmh],[data-ir]'); if (!t) return;
+  const t = e.target.closest('[data-marcar],[data-editar],[data-acao],[data-rmh],[data-ir],[data-estilo]'); if (!t) return;
   if (t.dataset.ir) return irPara(t.dataset.ir);
+  if (t.dataset.estilo) {
+    dados.estilo = t.dataset.estilo; dados.alertas = Object.assign({}, ESTILOS[t.dataset.estilo].alertas);
+    salvarLocal(); render(); return toast('Estilo ' + ESTILOS[t.dataset.estilo].nome + '. Siga os passos abaixo e toque em Confirmar.');
+  }
+  if (t.dataset.acao === 'limpar-marcas') { ls.del(K.marcas); return toast('Marcações de tomado apagadas.'); }
+  if (t.dataset.acao === 'zerar') { document.getElementById('conf-zerar').hidden = false; return; }
+  if (t.dataset.acao === 'zerar-nao') { document.getElementById('conf-zerar').hidden = true; return; }
+  if (t.dataset.acao === 'zerar-sim') {
+    dados = normalizar(Object.assign({}, dados, { itens: [] }));
+    salvarLocal(); ls.del(K.marcas); editando = null;
+    if (token()) await confirmar(); else { base = JSON.stringify(dados); ls.set(K.base, base); render(); toast('Dados apagados deste aparelho.'); }
+    return;
+  }
   if (t.dataset.marcar) {
     const m = ls.get(K.marcas, {}), d = hojeISO(); m[d] = m[d] || {};
     if (m[d][t.dataset.marcar]) delete m[d][t.dataset.marcar]; else m[d][t.dataset.marcar] = Date.now();
@@ -361,7 +431,10 @@ $app.addEventListener('click', async e => {
   else if (a === 'prazo-todos') { const p = editando.horarios[0]; editando.horarios.forEach(x => { x.inicio = p.inicio; x.fim = p.fim; }); render(); }
   else if (a === 'cancelar') { editando = null; render(); }
   else if (a === 'excluir') { document.getElementById('conf-excluir').hidden = false; }
-  else if (a === 'excluir-sim') { dados.itens = dados.itens.filter(x => x.id !== editando.id); salvarLocal(); editando = null; render(); toast('Excluído. Toque em Confirmar para atualizar o Calendário.'); }
+  else if (a === 'excluir-sim') {
+    const nome = editando.nome; dados.itens = dados.itens.filter(x => x.id !== editando.id); salvarLocal(); editando = null;
+    if (token()) await confirmar(); else { render(); toast(nome + ' excluído.'); }
+  }
   else if (a === 'baixar') { try { toast((await baixarDoGist()) ? 'Dados recarregados do GitHub.' : 'Nenhum Gist encontrado ainda.'); } catch (err) { toast(err.message); } render(); }
   else if (a === 'sair') { ls.del(K.token); ls.del(K.gist); gistInfo = null; render(); toast('Este aparelho foi desconectado.'); }
   else if (a === 'copiar') {
@@ -379,10 +452,14 @@ $app.addEventListener('input', e => {
     if (el.dataset.e) { editando.estoque = editando.estoque || { doses: '', em: hojeISO() }; editando.estoque[el.dataset.e] = el.dataset.e === 'doses' ? (el.value === '' ? '' : Number(el.value)) : el.value; }
   } else if (el.dataset.aj) {
     dados[el.dataset.aj] = el.dataset.aj === 'antecedencia' ? Math.max(1, Number(el.value) || 7) : el.value;
-    salvarLocal(); document.getElementById('pendente').hidden = !(pendente() && dados.itens.length);
+    salvarLocal(); atualizarFaixa();
   }
 });
-$app.addEventListener('change', e => { if (editando && e.target.dataset.c === 'ativo') editando.ativo = e.target.checked; });
+$app.addEventListener('change', e => {
+  const el = e.target;
+  if (editando && el.dataset.c === 'ativo') editando.ativo = el.checked;
+  if (el.dataset.al) { dados.alertas[el.dataset.al] = Number(el.value) || 0; salvarLocal(); atualizarFaixa(); }
+});
 
 $app.addEventListener('submit', async e => {
   e.preventDefault();
