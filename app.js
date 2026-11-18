@@ -268,6 +268,8 @@ function renderHoje() {
   let h = '<header style="display:grid;gap:10px"><h1>Remédios de hoje</h1>';
   if (plano.length) h += '<div class="meter"><div class="meter-row"><span>Horários concluídos</span><span>' + feitos + ' / ' + plano.length + '</span></div><div class="bar"><i style="width:' + (feitos / plano.length * 100) + '%"></i></div></div>';
   h += '</header>';
+  const semEst = dados.itens.filter(i => i.ativo !== false && !i.estoque && !i.semControle);
+  if (semEst.length) h += '<div class="alerta"><b>Falta informar o estoque</b><span class="note">' + semEst.map(i => esc(i.nome)).join(', ') + '. Sem isso o app não avisa quando vai acabar.</span><div class="linha-acoes"><button class="btn small" data-ir="itens">Informar estoque</button></div></div>';
   if (alertas.length) h += '<section>' + alertas.map(a => '<div class="alerta' + (a.faltam <= 0 ? ' danger' : '') + '"><b>' + esc(a.item.nome) + (a.faltam <= 0 ? ' acabou' : ' acaba em ' + a.faltam + (a.faltam === 1 ? ' dia' : ' dias')) + '</b><span class="note">' + (a.faltam <= 0 ? 'Atualize o estoque depois de comprar.' : 'Previsão: ' + brLongo(a.fim) + ' · restam cerca de ' + Math.max(0, a.resto) + ' doses.') + '</span></div>').join('') + '</section>';
   if (!dados.itens.length) {
     h += '<div class="box vazio">Nenhum remédio cadastrado.<br><br><button class="btn" data-acao="novo">Adicionar o primeiro</button> <button class="btn ghost" data-ir="ajustes">Conectar ao GitHub</button></div>';
@@ -297,8 +299,8 @@ function renderItens() {
   if (dados.itens.length) h += '<div class="box lista">' + dados.itens.map(item => {
     const p = previsao(item);
     const hs = item.horarios.filter(x => !x.fim || x.fim >= hoje).map(x => x.hora + (x.fim ? ' (até ' + br(x.fim) + ')' : '') + (x.inicio && x.inicio > hoje ? ' (de ' + br(x.inicio) + ')' : '')).sort();
-    const est = p ? (p.fim ? Math.max(0, p.resto) + ' doses · acaba ' + br(p.fim) : Math.max(0, p.resto) + ' doses') : 'sem estoque';
-    return '<button class="linha' + (item.ativo === false ? ' inativo' : '') + '" data-editar="' + item.id + '"><span class="nome">' + esc(item.nome || 'Sem nome') + '</span><span class="estq">' + esc(est) + '</span><span class="sub">' + esc(item.dose || '') + (hs.length ? ' · ' + esc(hs.join(', ')) : ' · sem horários ativos') + '</span></button>';
+    const est = p ? (p.fim ? Math.max(0, p.resto) + ' doses · acaba ' + br(p.fim) : Math.max(0, p.resto) + ' doses') : (item.semControle ? 'sem controle' : 'informar estoque');
+    return '<button class="linha' + (item.ativo === false ? ' inativo' : '') + (!p && !item.semControle && item.ativo !== false ? ' falta' : '') + '" data-editar="' + item.id + '"><span class="nome">' + esc(item.nome || 'Sem nome') + '</span><span class="estq">' + esc(est) + '</span><span class="sub">' + esc(item.dose || '') + (hs.length ? ' · ' + esc(hs.join(', ')) : ' · sem horários ativos') + '</span></button>';
   }).join('') + '</div>';
   h += '<div class="linha-acoes"><button class="btn" data-acao="novo">Adicionar remédio ou suplemento</button></div>';
   $app.innerHTML = h;
@@ -326,7 +328,8 @@ function renderEditor() {
   h += '<div class="linha-acoes"><button type="button" class="btn ghost small" data-acao="addh">+ Adicionar horário</button>' +
     (it.horarios.length > 1 ? '<button type="button" class="btn ghost small" data-acao="prazo-todos">Usar o prazo do 1º em todos</button>' : '') + '</div></section>';
 
-  h += '<section><h2>Estoque</h2><p class="note">Quantas doses você tem agora. O app desconta pelos horários e avisa ' + dados.antecedencia + ' dias antes de acabar. Deixe vazio para não controlar.</p>' +
+  h += '<section><h2>Estoque</h2><p class="note">Quantas doses você tem agora. O app desconta pelos horários e avisa ' + dados.antecedencia + ' dias antes de acabar.</p>' +
+    '<label class="toggle" for="f-semc"><input type="checkbox" id="f-semc" data-c="semControle"' + (it.semControle ? ' checked' : '') + '> Não controlar o estoque deste item</label>' +
     '<div class="campos-2"><label class="campo" for="f-doses">Doses em estoque<input type="number" inputmode="decimal" min="0" step="0.5" id="f-doses" data-e="doses" value="' + esc(e.doses == null ? '' : e.doses) + '"></label>' +
     '<label class="campo" for="f-em">Contadas em<input type="date" id="f-em" data-e="em" value="' + esc(e.em || hojeISO()) + '"></label></div>';
   const p = previsao(it);

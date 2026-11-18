@@ -115,3 +115,4 @@ ol.passos { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 1
 @media (max-width: 420px) { .campos-3 { grid-template-columns: 1fr 1fr; } }
 select { font: 500 15px var(--f-body); padding: 9px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); width: 100%; min-width: 0; }
 .alerta .linha-acoes { margin-top: 6px; }
+.linha.falta .estq { color: var(--warn); }
