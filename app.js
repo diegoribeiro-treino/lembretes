@@ -238,7 +238,10 @@ function renderHoje() {
   if (!dados.itens.length) {
     h += '<div class="box vazio">Nenhum remédio cadastrado.<br><br><button class="btn" data-acao="novo">Adicionar o primeiro</button> <button class="btn ghost" data-ir="ajustes">Conectar ao GitHub</button></div>';
   } else if (!plano.length) {
+    const amanha = planoDoDia(soma(hoje, 1));
     h += '<div class="box vazio">Nada programado para hoje.</div>';
+    if (amanha.length) h += '<section><h2>Amanhã</h2><div class="box">' + amanha.map(s => '<div class="slot" style="grid-template-columns:58px 1fr"><div class="time">' + s.hora + '</div><div class="items">' +
+      s.itens.map(({ item, h }) => '<span class="pill">' + esc(item.nome) + (Number(h.qtd) !== 1 ? ' ×' + esc(h.qtd) : '') + '</span>').join('') + '</div></div>').join('') + '</div></section>';
   } else {
     h += '<div class="box" role="list">' + plano.map(s => {
       const tk = !!marcas[s.hora];
